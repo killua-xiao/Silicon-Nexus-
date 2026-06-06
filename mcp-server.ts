@@ -65,7 +65,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 // Execute the Tools by translating them into REST HTTP calls to your Express backend
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
-  const sysKey = process.env.NEXUS_API_KEY || process.env.API_KEY || "";
+  const sysKey = process.env.NEXUS_API_KEY || process.env.API_KEY || "silinex.xyz";
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json"

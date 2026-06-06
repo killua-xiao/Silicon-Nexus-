@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { createServer as createViteServer } from 'vite';
@@ -147,7 +148,7 @@ async function startServer() {
   // --- SECURITY KEY AUTHORIZATION MIDDLEWARE (Private Mode) ---
   // If NEXUS_API_KEY is configured as an environment variable, require correct header key
   const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
-    const systemKey = process.env.NEXUS_API_KEY || process.env.API_KEY;
+    const systemKey = process.env.NEXUS_API_KEY || process.env.API_KEY || "silinex.xyz";
     if (!systemKey) {
       // API Key is not set on the server, open access is allowed
       return next();
@@ -187,7 +188,7 @@ async function startServer() {
 
   // Auth Status check endpoint
   app.get('/api/auth/status', (req, res) => {
-    const isProtected = !!(process.env.NEXUS_API_KEY || process.env.API_KEY);
+    const isProtected = !!(process.env.NEXUS_API_KEY || process.env.API_KEY || "silinex.xyz");
     res.json({ protected: isProtected });
   });
 
