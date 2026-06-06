@@ -5,14 +5,14 @@ import path from 'path';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
+import fs from 'fs';
 
 // --- CONFIG & LIMITS ---
 const MAX_TASKS = 5000;
 const MAX_AGENTS = 1000;
 const MAX_LOGS = 100;
 
-// --- IN-MEMORY DATABASE FOR AGENTS ---
-// In a real scenario, this would be Redis or PostgreSQL.
+// --- IN-MEMORY DATABASE FOR AGENTS with Local Storage Backing ---
 interface AgentMemory {
   [key: string]: any;
 }
@@ -31,8 +31,50 @@ interface Task {
 
 let memoryStore: Record<string, AgentMemory> = {};
 let taskQueue: Task[] = [];
-// Log events for the UI dashboard to consume
 const eventLogs: any[] = [];
+
+// Ensure persistence directory exists
+const DATA_DIR = path.join(process.cwd(), 'data');
+const DATA_FILE = path.join(DATA_DIR, 'db.json');
+
+// Helper to load state from disk
+function loadPreservedState() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    if (fs.existsSync(DATA_FILE)) {
+      const contents = fs.readFileSync(DATA_FILE, 'utf-8');
+      const data = JSON.parse(contents);
+      memoryStore = data.memoryStore || {};
+      taskQueue = data.taskQueue || [];
+      console.log(`[Silicon Nexus] Loaded ${Object.keys(memoryStore).length} agents and ${taskQueue.length} tasks from ${DATA_FILE}`);
+    }
+  } catch (error) {
+    console.error("[Silicon Nexus] Error reading persistent store, starting with empty registers:", error);
+  }
+}
+
+// Helper to save state cleanly
+let saveTimeout: NodeJS.Timeout | null = null;
+function persistState() {
+  // Coalesce / debounce disk writes to prevent I/O load
+  if (saveTimeout) clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(() => {
+    try {
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
+      const stateToSave = {
+        memoryStore,
+        taskQueue: taskQueue.slice(-2000), // Only save last 2000 tasks to prevent bloating
+      };
+      fs.writeFileSync(DATA_FILE, JSON.stringify(stateToSave, null, 2), 'utf-8');
+    } catch (error) {
+      console.error("[Silicon Nexus] Failed to save persistent store to flat file:", error);
+    }
+  }, 1000); // Wait 1 second after last mutation
+}
 
 function logEvent(type: string, agentId: string, details: string) {
   const event = {
@@ -71,6 +113,9 @@ const completeTaskSchema = z.object({
 });
 
 async function startServer() {
+  // Load persistent database data
+  loadPreservedState();
+
   const app = express();
   const PORT = 3000;
 
@@ -98,6 +143,53 @@ async function startServer() {
 
   // Apply to /api routes
   app.use('/api', apiLimiter);
+
+  // --- SECURITY KEY AUTHORIZATION MIDDLEWARE (Private Mode) ---
+  // If NEXUS_API_KEY is configured as an environment variable, require correct header key
+  const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
+    const systemKey = process.env.NEXUS_API_KEY || process.env.API_KEY;
+    if (!systemKey) {
+      // API Key is not set on the server, open access is allowed
+      return next();
+    }
+
+    // Checking of auth status endpoint is always open
+    if (req.path === '/api/auth/status') {
+      return next();
+    }
+
+    // Verify header credentials
+    const authHeader = req.headers['authorization'];
+    const customHeader = req.headers['x-api-key'];
+    let providedKey = '';
+
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      providedKey = authHeader.substring(7);
+    } else if (customHeader) {
+      providedKey = String(customHeader);
+    } else if (req.query.api_key) {
+      providedKey = String(req.query.api_key);
+    }
+
+    if (providedKey === systemKey) {
+      return next();
+    }
+
+    res.status(401).json({
+      error: 'Unauthorized Access',
+      message: 'This Silicon Nexus is a private personal workspace. Please provide a valid NEXUS_API_KEY/API_KEY.',
+      code: 'NEXUS_RE_AUTHENTICATE'
+    });
+  };
+
+  // Mount Auth Checks globally under /api
+  app.use('/api', authMiddleware);
+
+  // Auth Status check endpoint
+  app.get('/api/auth/status', (req, res) => {
+    const isProtected = !!(process.env.NEXUS_API_KEY || process.env.API_KEY);
+    res.json({ protected: isProtected });
+  });
 
   // --- API FOR UI DASHBOARD ---
   // We keep this lightweight as the dashboard polls it
@@ -144,6 +236,9 @@ async function startServer() {
       memoryStore[agentId] = { ...memoryStore[agentId], ...data };
       logEvent('MEMORY_WRITE', agentId, `Wrote keys: ${Object.keys(data).join(', ')}`);
       
+      // Trigger disk save
+      persistState();
+
       res.json({ status: 'success', storedKeys: Object.keys(data) });
     } catch (err: any) {
       res.status(400).json({ error: 'Validation failed', details: err.errors || err.message });
@@ -203,6 +298,10 @@ async function startServer() {
 
       taskQueue.push(newTask);
       logEvent('TASK_CREATED', creatorId, `Posted task type: ${type}`);
+      
+      // Trigger disk save
+      persistState();
+
       res.json({ status: 'created', taskId: newTask.id });
     } catch (err: any) {
       res.status(400).json({ error: 'Validation failed', details: err.errors || err.message });
@@ -242,6 +341,10 @@ async function startServer() {
       task.updatedAt = new Date().toISOString();
 
       logEvent('TASK_ACQUIRED', agentId, `Processing task: ${taskId}`);
+      
+      // Trigger disk save
+      persistState();
+
       res.json({ status: 'assigned', task });
     } catch (err: any) {
       res.status(400).json({ error: 'Validation failed', details: err.errors || err.message });
@@ -263,6 +366,10 @@ async function startServer() {
       task.updatedAt = new Date().toISOString();
 
       logEvent(`TASK_${status.toUpperCase()}`, agentId, `Finished task: ${taskId}`);
+      
+      // Trigger disk save
+      persistState();
+
       res.json({ status: 'updated', task });
     } catch (err: any) {
       res.status(400).json({ error: 'Validation failed', details: err.errors || err.message });

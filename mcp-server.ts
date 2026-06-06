@@ -65,12 +65,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 // Execute the Tools by translating them into REST HTTP calls to your Express backend
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+  const sysKey = process.env.NEXUS_API_KEY || process.env.API_KEY || "";
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json"
+  };
+
+  if (sysKey) {
+    headers["X-API-Key"] = sysKey;
+    headers["Authorization"] = `Bearer ${sysKey}`;
+  }
 
   try {
     if (name === "nexus_write_memory") {
       const response = await fetch(`${NEXUS_API_URL}/agent/${args.agentId}/memory`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(args.data),
       });
       const data = await response.json();
@@ -79,7 +89,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     if (name === "nexus_read_memory") {
       const keyPath = args.key ? `/${args.key}` : "";
-      const response = await fetch(`${NEXUS_API_URL}/agent/${args.agentId}/memory${keyPath}`);
+      const response = await fetch(`${NEXUS_API_URL}/agent/${args.agentId}/memory${keyPath}`, {
+        headers
+      });
       const data = await response.json();
       return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
     }
@@ -87,7 +99,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (name === "nexus_create_task") {
       const response = await fetch(`${NEXUS_API_URL}/tasks`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
            creatorId: args.creatorId,
            type: args.type,
